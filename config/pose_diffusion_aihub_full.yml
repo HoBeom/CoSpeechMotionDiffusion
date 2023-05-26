@@ -1,0 +1,43 @@
+name: pose_diffusion
+
+train_data_path: data/subset_aihub/lmdb/lmdb_train
+val_data_path: data/subset_aihub/lmdb/lmdb_test
+test_data_path: data/subset_aihub/lmdb/lmdb_test
+
+wordembed_dim: 300
+# wordembed_path: data/fasttext/crawl-300d-2M-subword.bin
+wordembed_path: data/fasttext/cc.ko.300.bin
+
+model_save_path: output/train_diffusion_aihub
+random_seed: -1
+
+pose_dim: 27
+diff_hidden_dim: 256
+block_depth: 8
+
+# model params
+model: pose_diffusion
+mean_pose: [-0.31384, 857.52072, 24.19362, -4.49959, 1097.70250, -12.71143, -3.57232, 1288.79640, -27.60548, -4.90305, 1420.79526, 7.83838, -153.03711, 1252.81706, -30.05787, -240.26356, 1031.60934, 14.64896, -207.09588, 973.17363, 140.88095, 145.48783, 1253.36046, -27.99284, 237.48327, 1033.35510, 5.17584, 205.38234, 985.67803, 136.09054]
+mean_dir_vec: [-0.01716, 0.98585, -0.15346, 0.00465, 0.99418, -0.07478, -0.00864, 0.94903, 0.25143, -0.68102, 0.71283, -0.07691, -0.33603, -0.87266, 0.17670, 0.15803, -0.22567, 0.59774, 0.68220, 0.70908, -0.07005, 0.35725, -0.86622, 0.13643, -0.15108, -0.16974, 0.62026]
+
+
+hidden_size: 300
+input_context: audio
+
+classifier_free: True
+null_cond_prob: 0.1
+
+# train params
+epochs: 500
+batch_size: 128
+learning_rate: 0.0005
+
+# eval params
+eval_net_path: output/train_h36m_gesture_autoencoder/gesture_autoencoder_checkpoint_best.bin
+
+# dataset params
+motion_resampling_framerate: 30
+n_poses: 64
+n_pre_poses: 4
+subdivision_stride: 10
+loader_workers: 4
