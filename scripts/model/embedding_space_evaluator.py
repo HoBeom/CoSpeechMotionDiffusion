@@ -24,7 +24,7 @@ class EmbeddingSpaceEvaluator:
         mode = 'pose'
         self.pose_dim = ckpt['pose_dim']
 
-        if args.pose_dim == 27:
+        if args.pose_dim == 27 or args.pose_dim == 60:
             self.net = EmbeddingNet(args, self.pose_dim, n_frames, lang_model.n_words, args.wordembed_dim,
                                     word_embeddings, mode).to(device)
             self.net.load_state_dict(ckpt['gen_dict'])
@@ -56,7 +56,7 @@ class EmbeddingSpaceEvaluator:
 
     def push_samples(self, context_text, context_spec, generated_poses, real_poses):
         # convert poses to latent features
-        if self.pose_dim == 27:
+        if self.pose_dim == 27 or self.pose_dim == 60:
             pre_poses = real_poses[:, 0:self.n_pre_poses]
             context_feat, _, _, real_feat, _, _, real_recon = self.net(context_text, context_spec, pre_poses, real_poses,
                                                                     'pose', variational_encoding=False)

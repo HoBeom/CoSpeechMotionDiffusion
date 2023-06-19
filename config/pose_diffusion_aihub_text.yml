@@ -7,8 +7,10 @@ test_data_path: data/aihub/lmdb/lmdb_test
 wordembed_dim: 300
 # wordembed_path: data/fasttext/crawl-300d-2M-subword.bin
 wordembed_path: data/fasttext/cc.ko.300.bin
+#freeze_wordembed: true
+dropout_prob: 0.3
 
-model_save_path: output/train_diffusion_aihub
+model_save_path: output/train_diffusion_aihub_text
 random_seed: -1
 
 pose_dim: 60
@@ -22,7 +24,7 @@ mean_dir_vec: [0.00201, 0.99794, -0.01846, 0.00504, 0.97149, -0.21329, -0.00346,
 
 
 hidden_size: 300
-input_context: audio
+input_context: both
 
 classifier_free: True
 null_cond_prob: 0.1

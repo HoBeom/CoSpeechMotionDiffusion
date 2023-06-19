@@ -12,22 +12,24 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 skeleton_line_pairs = [(0, 1, 'b'), (1, 2, 'darkred'), (2, 3, 'r'), (3, 4, 'orange'), (1, 5, 'darkgreen'),
                        (5, 6, 'limegreen'), (6, 7, 'darkseagreen')]
-# dir_vec_pairs = [(0, 1, 0.26), (1, 2, 0.18), (2, 3, 0.14), (1, 4, 0.22), (4, 5, 0.36),
-#                  (5, 6, 0.33), (1, 7, 0.22), (7, 8, 0.36), (8, 9, 0.33)]  # adjacency and bone length
+
 dir_vec_pairs = [(0, 1, 0.26), (1, 2, 0.18), (2, 3, 0.14), (2, 4, 0.22), (4, 5, 0.36),
                  (5, 6, 0.33), (2, 7, 0.22), (7, 8, 0.36), (8, 9, 0.33)]  # adjacency and bone length
+
 full_dir_vec_pairs = [(0, 1, 0.26), (1, 2, 0.18), (2, 3, 0.14), (3, 4, 0.14),
                       (2, 5, 0.22), (5, 6, 0.36), (6, 7, 0.33), (7, 8, 0.33),
                         (2, 9, 0.22), (9, 10, 0.36), (10, 11, 0.33), (11, 12, 0.33),
                         (0, 13, 0.22), (13, 14, 0.36), (14, 15, 0.33),
                         (0, 16, 0.22), (16, 17, 0.36), (17, 18, 0.33),
                         (15, 19, 0.10), (18, 20, 0.10)]  # adjacency and bone length
+
 full_skeleton_line_pairs = [(0, 1, 'b'), (1, 2, 'darkred'), (2, 3, 'r'), (3, 4, 'orange'),
                             (2, 5, 'darkgreen'), (5, 6, 'limegreen'), (6, 7, 'darkseagreen'),
                             (2, 9, 'darkgreen'), (9, 10, 'limegreen'), (10, 11, 'darkseagreen'),
                             (11, 12, 'darkseagreen'), (0, 13, 'darkgreen'), (13, 14, 'limegreen'),
                             (14, 15, 'darkseagreen'), (0, 16, 'darkgreen'), (16, 17, 'limegreen'),
                             (17, 18, 'darkseagreen'), (15, 19, 'darkgreen'), (18, 20, 'darkgreen')]
+
 
 def normalize_string(s):
     """ lowercase, trim, and remove non-letter characters """

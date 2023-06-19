@@ -20,16 +20,22 @@ from data_loader.data_preprocessor_aihub import DataPreprocessor
 from data_loader.lmdb_data_loader_aihub import SpeechMotionDataset, default_collate_fn
 from model.embedding_space_evaluator import EmbeddingSpaceEvaluator
 from utils.average_meter import AverageMeter
-from utils.data_utils_aihub import convert_dir_vec_to_pose, convert_pose_seq_to_dir_vec, resample_pose_seq, dir_vec_pairs
+from utils.data_utils_aihub import (convert_dir_vec_to_pose, 
+                                        convert_dir_vec_to_pose_fullbody,
+                                        convert_pose_seq_to_dir_vec, 
+                                        convert_pose_seq_to_dir_vec_fullbody,
+                                        resample_pose_seq, 
+                                        dir_vec_pairs,
+                                        full_dir_vec_pairs)
 from utils.train_utils import set_logger, set_random_seed
                                                                                                               
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 angle_pair = [
-    (3, 4),
-    (4, 5),
     (6, 7),
-    (7, 8)
+    (7, 8),
+    (10, 11),
+    (11, 12),
 ]
 
 change_angle = [0.0034540758933871984, 0.007043459918349981, 0.003493624273687601, 0.007205077446997166]
@@ -37,6 +43,85 @@ sigma = 0.1
 thres = 0.03
 
 from model.pose_diffusion import PoseDiffusion
+
+class PoseSimilarityEvaluator(object):
+
+    def __init__(self, target_pose, 
+                static=True, dynamic=True, point_thres=0.2, point_num=10):
+        self.static = static
+        self.dynamic = dynamic
+        self.target_pose = target_pose
+        self.point_num = point_num
+        self.point_thres = point_thres
+        self.dynamic_points = self.get_dynamic_points(target_pose)
+
+    def evaluate(self, pose_seq):
+        max_score = self.get_max_score()
+        if max_score == 0:
+            return 0, 0
+        if self.static:
+            static_score = self.get_static_score(pose_seq)
+        else:
+            static_score = 0
+        if self.dynamic:
+            dynamic_score = self.get_dynamic_score(pose_seq)
+        else:
+            dynamic_score = 0
+        return static_score + dynamic_score, self.get_max_score()
+
+    def get_max_score(self):
+        max_score = 0
+        if self.static:
+            max_score += len(self.dynamic_points)
+        if self.dynamic and len(self.dynamic_points) > 1:
+            max_score += len(self.dynamic_points) - 1
+        return max_score
+
+    def get_static_score(self, pose_seq):
+        if len(self.dynamic_points) == 0:
+            return 0
+        compare_pose_seq = pose_seq[self.dynamic_points]
+        target_pose_seq = self.target_pose[self.dynamic_points]
+        cos_sim = np.zeros(len(compare_pose_seq))
+        for i in range(len(compare_pose_seq)):
+            norm = np.linalg.norm(compare_pose_seq[i]) * np.linalg.norm(target_pose_seq[i])
+            sim = np.dot(compare_pose_seq[i], target_pose_seq[i]) / norm
+            cos_sim[i] = np.round(sim, 5)
+        cos_sim = np.sum(cos_sim)
+        return cos_sim
+    
+    def get_dynamic_score(self, pose_seq):
+        if len(self.dynamic_points) < 2:
+            return 0
+        compare_pose_seq = pose_seq[self.dynamic_points]
+        target_pose_seq = self.target_pose[self.dynamic_points]
+        compare_diff = np.diff(compare_pose_seq, axis=0)
+        target_diff = np.diff(target_pose_seq, axis=0)
+        cos_sim = np.zeros(len(compare_diff))
+        for i in range(len(compare_diff)):
+            norm = np.linalg.norm(compare_diff[i]) * np.linalg.norm(target_diff[i])
+            sim = np.dot(compare_diff[i], target_diff[i]) / norm
+            cos_sim[i] = np.round(sim, 5)
+        cos_sim = np.sum(cos_sim)
+        return cos_sim
+
+    def get_dynamic_points(self, target_pose):
+        dynamic_points = []
+        movement = self.get_frame_movement(target_pose)
+        for i in range(len(movement)):
+            if movement[i] > self.point_thres:
+                dynamic_points.append((i, movement[i]))
+        dynamic_points = sorted(dynamic_points, key=lambda x: x[1], reverse=True)
+        if len(dynamic_points) > self.point_num:
+            dynamic_points = dynamic_points[:self.point_num]
+        dynamic_points = sorted([x[0] for x in dynamic_points])
+        return dynamic_points
+    
+    @staticmethod
+    def get_frame_movement(dir_vec):
+        diff_vec = np.roll(dir_vec, -1, axis=0) - dir_vec
+        movement = np.linalg.norm(diff_vec, axis=-1)[:-1]
+        return movement
 
 def load_checkpoint_and_model(checkpoint_path, _device='cpu'):
     print('loading checkpoint {}'.format(checkpoint_path))
@@ -172,6 +257,8 @@ def evaluate_testset(test_data_loader, diffusion, embed_space_evaluator, args, p
     accel = AverageMeter('accel')
     bc = AverageMeter('bc')
     start = time.time()
+    pose_similarities = AverageMeter('pose_similarities')
+    clip_pose_similarities = AverageMeter('clip_pose_similarities')
 
     with torch.no_grad():
         for iter_idx, data in enumerate(test_data_loader, 0):
@@ -192,7 +279,7 @@ def evaluate_testset(test_data_loader, diffusion, embed_space_evaluator, args, p
             if args.model == 'pose_diffusion':
                 out_dir_vec = diffusion.sample(pose_dim, pre_seq, in_audio)
 
-            out_dir_vec_bc = out_dir_vec + torch.tensor(args.mean_dir_vec).squeeze(1).unsqueeze(0).unsqueeze(0).cuda()
+            out_dir_vec_bc = out_dir_vec + torch.tensor(args.mean_dir_vec).squeeze(1).unsqueeze(0).unsqueeze(0).to(device)
             beat_vec = out_dir_vec_bc.reshape(out_dir_vec.shape[0], out_dir_vec.shape[1], -1, 3)
 
             beat_vec = F.normalize(beat_vec, dim = -1)
@@ -218,14 +305,28 @@ def evaluate_testset(test_data_loader, diffusion, embed_space_evaluator, args, p
                         if (angle_diff[b][t - 1] - angle_diff[b][t] >= thres or angle_diff[b][t + 1] - angle_diff[b][t] >= thres):
                             motion_beat_time.append(float(t) / 15.0)
                 if (len(motion_beat_time) == 0):
+                    print("skip: motion beat time is zero")
                     continue
                 audio = in_audio[b].cpu().numpy()
+                if not np.any(audio): # audio is all zero
+                    print("skip: audio is all zero")
+                    continue
                 audio_beat_time = librosa.onset.onset_detect(y=audio, sr=16000, units='time')
                 sum = 0
                 for audio in audio_beat_time:
                     sum += np.power(math.e, -np.min(np.power((audio - motion_beat_time), 2)) / (2 * sigma * sigma))
                 bc.update(sum / len(audio_beat_time), len(audio_beat_time))
 
+            np_target = target.cpu().numpy()
+            np_out_dir_vec = out_dir_vec.cpu().numpy()
+            for batch_idx in range(batch_size):
+                pse = PoseSimilarityEvaluator(np_target[batch_idx])
+                score, max_score = pse.evaluate(np_out_dir_vec[batch_idx])
+                if max_score != 0:
+                    pose_similarities.update(score, max_score)
+                    clip_pose_similarities.update(score / max_score, 1)
+                    # print(f"score: {score}, max_score: {max_score}, similarity: {score / max_score}")
+            
             if args.model != 'gesture_autoencoder':
                 if embed_space_evaluator:
                     embed_space_evaluator.push_samples(in_text_padded, in_audio, out_dir_vec, target)
@@ -263,6 +364,7 @@ def evaluate_testset(test_data_loader, diffusion, embed_space_evaluator, args, p
         ret_dict['feat_dist'] = feat_dist
         ret_dict['diversity_score'] = diversity_score
         ret_dict['bc'] = bc.avg
+        logging.info(f'[VAL] pose similarities: {pose_similarities.avg}, clip pose similarities: {clip_pose_similarities.avg}')
 
     return ret_dict
 
@@ -322,6 +424,117 @@ from textwrap import wrap
 import matplotlib.animation as animation
 import subprocess
 
+def create_video_and_save_movement(save_path, iter_idx, prefix, target, output, mean_data, title,
+                          audio=None, aux_str=None, clipping_to_shortest_stream=False, delete_audio_file=True):
+    
+    print('rendering a video...')
+    start = time.time()
+
+    fig = plt.figure(figsize=(12, 4))
+    gs = gridspec.GridSpec(nrows=2, # row 몇 개 
+                       ncols=2, # col 몇 개 
+                       height_ratios=[6, 1], 
+                       width_ratios=[1, 1]
+                      )
+    axes = [fig.add_subplot(gs[0], projection='3d'), fig.add_subplot(gs[1], projection='3d'),
+            fig.add_subplot(gs[2]), fig.add_subplot(gs[3])]
+    axes[0].view_init(elev=20, azim=-60)
+    axes[1].view_init(elev=20, azim=-60)
+    fig_title = title
+
+    target_movement = get_frame_movement(target)
+    print("max target_movement: ", np.max(target_movement))
+    output_movement = get_frame_movement(output)
+    print("max output_movement: ", np.max(output_movement))
+
+    if aux_str:
+        fig_title += ('\n' + aux_str)
+    fig.suptitle('\n'.join(wrap(fig_title, 75)), fontsize='medium')
+
+    # un-normalization and convert to poses
+    mean_data = mean_data.flatten()
+    output = output + mean_data
+    # output_poses = convert_dir_vec_to_pose(output)
+    output_poses = convert_dir_vec_to_pose_fullbody(output)
+    target_poses = None
+    if target is not None:
+        target = target + mean_data
+        # target_poses = convert_dir_vec_to_pose(target)
+        target_poses = convert_dir_vec_to_pose_fullbody(target)
+
+    def animate(i):
+        for k, name in enumerate(['human', 'generated']):
+            if name == 'human' and target is not None and i < len(target):
+                pose = target_poses[i]
+            elif name == 'generated' and i < len(output):
+                pose = output_poses[i]
+            else:
+                pose = None
+
+            if pose is not None:
+                axes[k].clear()
+                for j, pair in enumerate(full_dir_vec_pairs):
+                    axes[k].plot([pose[pair[0], 0], pose[pair[1], 0]],
+                                 [pose[pair[0], 2], pose[pair[1], 2]],
+                                 [pose[pair[0], 1], pose[pair[1], 1]],
+                                 zdir='z', linewidth=5)
+                axes[k].set_xlim3d(-0.5, 0.5)
+                axes[k].set_ylim3d(0.5, -0.5)
+                axes[k].set_zlim3d(-0.5, 0.5)
+                # axes[k].set_zlim3d(0.5, -0.5)
+                axes[k].set_xlabel('x')
+                axes[k].set_ylabel('z')
+                axes[k].set_zlabel('y')
+                axes[k].set_title('{} ({}/{})'.format(name, i + 1, len(output)))
+                # axes[k].axis('off')
+        for k, movement in enumerate([target_movement, output_movement], 2):
+            if i < len(movement): # last frame
+                axes[k].clear()
+                axes[k].plot(movement, zorder=0)
+                axes[k].scatter(i, movement[i], c='r', zorder=1)
+                axes[k].set_ylim(0, 0.4)
+                axes[k].set_xlim(0, len(movement))
+
+    if target is not None:
+        num_frames = max(len(target), len(output))
+    else:
+        num_frames = len(output)
+    ani = animation.FuncAnimation(fig, animate, interval=30, frames=num_frames, repeat=False)
+
+    # show audio
+    audio_path = None
+    if audio is not None:
+        assert len(audio.shape) == 1  # 1-channel, raw signal
+        audio = audio.astype(np.float32)
+        sr = 16000
+        audio_path = '{}/{}.wav'.format(save_path, iter_idx)
+        sf.write(audio_path, audio, sr)
+
+    # save video
+    try:
+        video_path = '{}/temp_{}.mp4'.format(save_path,  iter_idx)
+        ani.save(video_path, fps=15, dpi=300, codec="mpeg4")  # dpi 150 for a higher resolution
+        del ani
+        plt.close(fig)
+    except RuntimeError:
+        assert False, 'RuntimeError'
+
+    # merge audio and video
+    if audio is not None:
+        merged_video_path = '{}/{}_{}.mp4'.format(save_path, prefix, iter_idx)
+        cmd = ['ffmpeg', '-loglevel', 'panic', '-y', '-i', video_path, '-i', audio_path, '-strict', '-2',
+               merged_video_path]
+        if clipping_to_shortest_stream:
+            cmd.insert(len(cmd) - 1, '-shortest')
+        subprocess.call(cmd)
+        if delete_audio_file:
+            os.remove(audio_path)
+        os.remove(video_path)
+
+    print('done, took {:.1f} seconds'.format(time.time() - start))
+    return output_poses, target_poses
+
+
 def create_video_and_save(save_path, iter_idx, prefix, target, output, mean_data, title,
                           audio=None, aux_str=None, clipping_to_shortest_stream=False, delete_audio_file=True):
     print('rendering a video...')
@@ -340,11 +553,13 @@ def create_video_and_save(save_path, iter_idx, prefix, target, output, mean_data
     # un-normalization and convert to poses
     mean_data = mean_data.flatten()
     output = output + mean_data
-    output_poses = convert_dir_vec_to_pose(output)
+    # output_poses = convert_dir_vec_to_pose(output)
+    output_poses = convert_dir_vec_to_pose_fullbody(output)
     target_poses = None
     if target is not None:
         target = target + mean_data
-        target_poses = convert_dir_vec_to_pose(target)
+        # target_poses = convert_dir_vec_to_pose(target)
+        target_poses = convert_dir_vec_to_pose_fullbody(target)
 
     def animate(i):
         for k, name in enumerate(['human', 'generated']):
@@ -357,7 +572,7 @@ def create_video_and_save(save_path, iter_idx, prefix, target, output, mean_data
 
             if pose is not None:
                 axes[k].clear()
-                for j, pair in enumerate(dir_vec_pairs):
+                for j, pair in enumerate(full_dir_vec_pairs):
                     axes[k].plot([pose[pair[0], 0], pose[pair[1], 0]],
                                  [pose[pair[0], 2], pose[pair[1], 2]],
                                  [pose[pair[0], 1], pose[pair[1], 1]],
@@ -426,14 +641,17 @@ def main(mode, checkpoint_path):
     logging.info("PyTorch version: {}".format(torch.__version__))
     logging.info("CUDA version: {}".format(torch.version.cuda))
     logging.info("{} GPUs, default {}".format(torch.cuda.device_count(), device))
+    logging.info(f"checkpoint path: {checkpoint_path}")
     logging.info(pprint.pformat(vars(args)))
 
     # load mean vec
-    mean_pose = np.array(args.mean_pose).squeeze()
-    mean_dir_vec = np.array(args.mean_dir_vec).squeeze()
+    # mean_pose = np.array(args.mean_pose).squeeze()
+    mean_pose = [-10.86856, 869.57773, 101.33229, -10.72149, 944.91927, 99.95321, -9.79247, 1122.75707, 61.54399, -10.58498, 1323.55203, 56.52225, -12.05896, 1460.32917, 87.05334, 25.78733, 1282.45543, 55.00527, 152.16606, 1289.76238, 58.01432, 228.05049, 1056.83990, 84.93741, 188.08313, 1001.43804, 233.00208, -46.68136, 1282.16211, 54.22307, -173.19778, 1287.35191, 55.57354, -249.45129, 1055.41187, 84.50893, -213.03483, 1003.46276, 232.51224, 80.05693, 869.41429, 102.42359, 110.07840, 465.02201, 97.89946, 122.33407, 110.19615, 44.14206, -101.79406, 869.74122, 100.24100, -120.06018, 464.83646, 87.92560, -122.39348, 109.82835, 34.72097, 137.66107, 54.95229, 180.11621, -143.90146, 53.92723, 169.55333]
+    # mean_dir_vec = np.array(args.mean_dir_vec).squeeze()
+    mean_dir_vec = [0.00201, 0.99794, -0.01846, 0.00504, 0.97149, -0.21329, -0.00346, 0.99562, -0.02694, -0.01009, 0.96698, 0.21530, 0.21951, 0.96973, -0.04167, 0.98123, 0.05830, 0.01903, 0.28934, -0.91595, 0.10728, -0.17684, -0.21941, 0.64573, -0.22654, 0.96801, -0.04625, -0.98263, 0.04320, 0.00428, -0.29029, -0.91238, 0.11533, 0.16200, -0.20236, 0.64411, 0.99498, -0.00185, 0.01180, 0.07443, -0.99191, -0.01070, 0.03431, -0.98208, -0.14789, -0.99498, 0.00185, -0.01180, -0.04565, -0.99317, -0.02977, -0.00618, -0.98257, -0.14619, 0.10001, -0.36995, 0.91047, -0.14170, -0.37438, 0.90288]
 
     # load lang_model
-    vocab_cache_path = os.path.join('data/ted_dataset', 'vocab_cache.pkl')
+    vocab_cache_path = os.path.join('data/aihub/lmdb', 'vocab_cache.pkl')
     with open(vocab_cache_path, 'rb') as f:
         lang_model = pickle.load(f)
 
@@ -452,8 +670,10 @@ def main(mode, checkpoint_path):
         return dataset
 
     if mode == 'eval':
-        val_data_path = 'data/subset_aihub/lmdb/lmdb_test'
-        eval_net_path = 'output/train_h36m_gesture_autoencoder/gesture_autoencoder_checkpoint_best.bin'
+        val_data_path = 'data/aihub/lmdb/lmdb_test'
+        # eval_net_path = 'output/train_h36m_gesture_autoencoder/gesture_autoencoder_checkpoint_best.bin'
+        eval_net_path = 'output/train_aihub_gesture_autoencoder/gesture_autoencoder_checkpoint_best_khm.bin'
+        logging.info(f"eval_net_path: {eval_net_path}")
         embed_space_evaluator = EmbeddingSpaceEvaluator(args, eval_net_path, lang_model, device)
         val_dataset = load_dataset(val_data_path)
         data_loader = DataLoader(dataset=val_dataset, batch_size=args.batch_size, collate_fn=collate_fn,
@@ -462,7 +682,7 @@ def main(mode, checkpoint_path):
         evaluate_testset(data_loader, diffusion, embed_space_evaluator, args, pose_dim)
     
     elif mode == 'short':
-        val_data_path = 'data/subset_aihub/lmdb/lmdb_test'
+        val_data_path = 'data/aihub/lmdb/lmdb_test'
         val_dataset = load_dataset(val_data_path)
         data_loader = DataLoader(dataset=val_dataset, batch_size=32, collate_fn=collate_fn,
                                  shuffle=False, drop_last=True, num_workers=args.loader_workers)
@@ -476,7 +696,7 @@ def main(mode, checkpoint_path):
 
         # load clips and make gestures
         n_saved = 0
-        lmdb_env = lmdb.open('data/subset_aihub/lmdb/lmdb_test', readonly=True, lock=False)
+        lmdb_env = lmdb.open('data/aihub/lmdb/lmdb_test', readonly=True, lock=False)
 
         with lmdb_env.begin(write=False) as txn:
             keys = [key for key, _ in txn.cursor()]
@@ -503,7 +723,7 @@ def main(mode, checkpoint_path):
                 clip_poses = resample_pose_seq(clip_poses, clip_time[1] - clip_time[0],
                                                                 args.motion_resampling_framerate)
                 print(f"clip_poses: {clip_poses.shape}")
-                target_dir_vec = convert_pose_seq_to_dir_vec(clip_poses)
+                target_dir_vec = convert_pose_seq_to_dir_vec_fullbody(clip_poses)
                 print(f"target_dir_vec: {target_dir_vec.shape}")
                 target_dir_vec = target_dir_vec.reshape(target_dir_vec.shape[0], -1)
                 target_dir_vec -= mean_dir_vec
@@ -532,20 +752,79 @@ def main(mode, checkpoint_path):
                     target_dir_vec, out_dir_vec, mean_data,
                     '', audio=clip_audio, aux_str=aux_str)
                 n_saved += 1
+    elif mode == 'movement':
+        clip_duration_range = [50, 5000]
 
+        n_generations = 5
+
+        # load clips and make gestures
+        n_saved = 0
+        lmdb_env = lmdb.open('data/aihub/lmdb/lmdb_test', readonly=True, lock=False)
+
+        with lmdb_env.begin(write=False) as txn:
+            keys = [key for key, _ in txn.cursor()]
+            while n_saved < n_generations:  # loop until we get the desired number of results
+                # select video
+                key = random.choice(keys)
+
+                buf = txn.get(key)
+                video = pyarrow.deserialize(buf)
+                vid = video['vid']
+                clips = video['clips']
+
+                # select clip
+                n_clips = len(clips)
+                if n_clips == 0:
+                    continue
+                clip_idx = random.randrange(n_clips)
+                print(f"clip_idx: {clip_idx}")
+                clip_poses = np.array(clips[clip_idx]['skeletons_3d'])
+                clip_audio = np.array(clips[clip_idx]['audio_raw'])
+                clip_words = clips[clip_idx]['words']
+                clip_time = [clips[clip_idx]['start_time'], clips[clip_idx]['end_time']]
+                print(f"resample time: {clip_time[1] - clip_time[0]}")
+                clip_poses = resample_pose_seq(clip_poses, clip_time[1] - clip_time[0],
+                                                                args.motion_resampling_framerate)
+                print(f"clip_poses: {clip_poses.shape}")
+                target_dir_vec = convert_pose_seq_to_dir_vec_fullbody(clip_poses)
+                print(f"target_dir_vec: {target_dir_vec.shape}")
+                target_dir_vec = target_dir_vec.reshape(target_dir_vec.shape[0], -1)
+                target_dir_vec -= mean_dir_vec
+
+                # check duration
+                clip_duration = clip_time[1] - clip_time[0]
+                print('clip duration: {:.1f} seconds'.format(clip_duration))
+                if clip_duration < clip_duration_range[0] or clip_duration > clip_duration_range[1]:
+                    continue
+
+                # synthesize
+                for selected_vi in range(len(clip_words)):  # make start time of input text zero
+                    clip_words[selected_vi][1] -= clip_time[0]  # start time
+                    clip_words[selected_vi][2] -= clip_time[0]  # end time
+
+                out_dir_vec = generate_gestures(args, diffusion, lang_model, clip_audio, clip_words, pose_dim, 
+                                                seed_seq=target_dir_vec[0:args.n_pre_poses], fade_out=False)
+
+                # make a video
+                aux_str = '({}, time: {}-{})'.format(vid, str(datetime.timedelta(seconds=clip_time[0])),
+                                                     str(datetime.timedelta(seconds=clip_time[1])))
+                mean_data = np.array(args.mean_dir_vec).reshape(-1, 3)
+                save_path = args.model_save_path
+                create_video_and_save_movement(
+                    save_path, n_saved, 'movement',
+                    target_dir_vec, out_dir_vec, mean_data,
+                    '', audio=clip_audio, aux_str=aux_str)
+                n_saved += 1
     else:
         assert False, 'wrong mode'
 
 
 if __name__ == '__main__':
     mode = sys.argv[1]
-    assert mode in ["eval", "short", "long"]
+    assert mode in ["eval", "short", "long", "movement"]
 
-    ckpt_path = 'output/train_diffusion_aihub/pose_diffusion_checkpoint_499.bin'
-
+    # ckpt_path = 'output/train_diffusion_aihub_try01/pose_diffusion_checkpoint_499.bin'
+    # ckpt_path = 'output/train_diffusion_aihub/pose_diffusion_checkpoint_499.bin'
+    ckpt_path = sys.argv[2]
+    
     main(mode, ckpt_path)
-
-# 2023-05-01 16:29:59,330: [VAL] joint mae: 0.02505, accel diff: 0.00305, FGD: 11.909, diversity_score: 125.776, BC: 0.653, feat_D: 80.337 / 94.6s
-# 2023-05-01 16:32:13,155: [VAL] joint mae: 0.02520, accel diff: 0.00305, FGD: 11.654, diversity_score: 129.713, BC: 0.655, feat_D: 81.182 / 95.6s
-# 2023-05-01 16:34:44,119: [VAL] joint mae: 0.02522, accel diff: 0.00302, FGD: 14.063, diversity_score: 134.397, BC: 0.651, feat_D: 81.531 / 96.1s
-# 2023-05-01 16:36:58,183: [VAL] joint mae: 0.02516, accel diff: 0.00305, FGD: 12.929, diversity_score: 87.337, BC: 0.653, feat_D: 81.886 / 96.3s

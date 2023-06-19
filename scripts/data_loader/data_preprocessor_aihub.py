@@ -9,6 +9,7 @@ import pyarrow
 import utils.data_utils_aihub as data_utils
 from data_loader.motion_preprocessor_aihub import MotionPreprocessor
 
+from tqdm import tqdm
 
 class DataPreprocessor:
     def __init__(self, clip_lmdb_dir, out_lmdb_dir, n_poses, subdivision_stride,
@@ -28,7 +29,7 @@ class DataPreprocessor:
         self.audio_sample_length = int(self.n_poses / self.skeleton_resampling_fps * 16000)
 
         # create db for samples
-        map_size = 1024 * 50  # in MB
+        map_size = 1024 * 200  # in MB
         map_size <<= 20  # in B
         self.dst_lmdb_env = lmdb.open(out_lmdb_dir, map_size=map_size)
         self.n_out_samples = 0
@@ -39,7 +40,7 @@ class DataPreprocessor:
 
         # sampling and normalization
         cursor = src_txn.cursor()
-        for key, value in cursor:
+        for key, value in tqdm(cursor):
             video = pyarrow.deserialize(value)
             vid = video['vid']
             clips = video['clips']
@@ -86,7 +87,11 @@ class DataPreprocessor:
             (len(clip_skeleton) - self.n_poses)
             / self.subdivision_stride) + 1  # floor((K - (N+M)) / S) + 1
         expected_audio_length = data_utils.calc_spectrogram_length_from_motion_length(len(clip_skeleton), self.skeleton_resampling_fps)
-        assert abs(expected_audio_length - clip_audio.shape[1]) <= 5, 'audio and skeleton lengths are different'
+        if not (abs(expected_audio_length - clip_audio.shape[1]) <= 5): # 'audio and skeleton lengths are different'
+            num_subdivision = 0
+        if not np.any(clip_audio_raw): # if audio is all zero
+            logging.warn(f"{vid}, {clip_s_t}~{clip_e_t} has no raw audio")
+            num_subdivision = 0 
         for i in range(num_subdivision):
             start_idx = i * self.subdivision_stride
             fin_idx = start_idx + self.n_poses
@@ -132,7 +137,7 @@ class DataPreprocessor:
                                'start_time': subdivision_start_time,
                                'end_time': subdivision_end_time,
                                'is_correct_motion': is_correct_motion, 'filtering_message': filtering_message}
-                print(f"motion_info: {motion_info}")
+                # print(f"motion_info: {motion_info}")
                 if is_correct_motion or self.disable_filtering:
                     sample_skeletons_list.append(sample_skeletons)
                     sample_words_list.append(sample_words)
@@ -149,7 +154,9 @@ class DataPreprocessor:
                                                                  aux_info):
                     # preprocessing for poses
                     poses = np.asarray(poses)
-                    dir_vec = data_utils.convert_pose_seq_to_dir_vec(poses)
+                    # dir_vec = data_utils.convert_pose_seq_to_dir_vec(poses)
+                    dir_vec = data_utils.convert_pose_seq_to_dir_vec_fullbody(poses)
+                    # print(f"dir_vec.shape: {dir_vec.shape}")
                     normalized_dir_vec = self.normalize_dir_vec(dir_vec, self.mean_dir_vec)
 
                     # save
@@ -158,7 +165,8 @@ class DataPreprocessor:
                     v = pyarrow.serialize(v).to_buffer()
                     txn.put(k, v)
                     self.n_out_samples += 1
-
+        #         print(f"self.n_out_samples: {self.n_out_samples}")
+        # print(f"n_filtered_out: {n_filtered_out}")
         return n_filtered_out
 
     @staticmethod

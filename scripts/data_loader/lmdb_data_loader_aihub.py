@@ -87,6 +87,7 @@ class SpeechMotionDataset(Dataset):
         self.lmdb_env = lmdb.open(preloaded_dir, readonly=True, lock=False)
         with self.lmdb_env.begin() as txn:
             self.n_samples = txn.stat()['entries']
+            logging.info(f"  no. of samples: {self.n_samples}")
 
         # make a speaker model
         if speaker_model is None or speaker_model == 0:
