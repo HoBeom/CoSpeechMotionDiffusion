@@ -47,11 +47,9 @@ Co-speech motion generation with diffusion model
 
 8주차 이후 (05.22 ~ ) : 
 
-- [ ] AI-Hub 데이터셋 forced alignment 학습 결과 검토
-- [ ] Full body용 오토인코더 학습
-- [ ] 세바시 데이터셋 검토
-- [ ] Text encoding feature 추가
-- [ ] Audio Condition idea 논의
+- [x] AI-Hub 데이터셋 forced alignment 학습 결과 검토
+- [x] Full body용 오토인코더 학습
+- [X] Text encoding feature 추가
 
 
 ## 연구 설계 
@@ -76,14 +74,4 @@ AI-Hub의 베이스라인을 돌려 보고 데이터 전처리도 수행한다. 
 4. [MDM: Human Motion Diffusion Model](https://github.com/GuyTevet/motion-diffusion-model)
 
 5. [Taming Diffusion Models for Audio-Driven Co-Speech Gesture Generation](https://github.com/Advocate99/DiffGesture)
-
-
-## 3. 아이디어 노트 
-
-## 4. 실험 
-
-## 5. 잠정적인 결론들 
-
-## 6. 논문 작성 
-
 
